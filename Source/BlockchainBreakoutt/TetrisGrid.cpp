@@ -16,11 +16,30 @@
 #include "NiagaraSystem.h"
 #include "TetrisBlock.h"
 #include "TetrisBlockValue.h"
+#include "DropState.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "limits"
+#include "EngineUtils.h"
 
 ATetrisGrid::ATetrisGrid()
 {
+    LevelsDataTable = {
+        { "1", true, 2, 100000, 0.5f, FVector(0.0f, 0.39f, 1.0f) },
+        { "2", true, 2, 500000, 0.4f, FVector(1.0f, 0.0f, 0.0f)},
+        { "3", true, 2, 1000000, 0.4f, FVector(1.0f, 1.0f, 0.0f) },
+        { "4", true, 3, 2000000, 0.4f, FVector(0.0f, 1.0f, 0.0f) },
+        { "5", true, 3, 1000000, 0.3f, FVector(1.0f, 0.8f, 0.0f) },
+        { "6", true, 4, 4000000, 0.3f, FVector(0.5f, 0.0f, 0.5f) },
+        { "7", true, 4, 7000000, 0.3f, FVector(1.0f, 0.0f, 0.76f) },
+        { "8", true, 4, 9000000, 0.3f, FVector(0.0f, 1.0f, 0.75f) }
+    };
+
+    CurrentLevel = LevelsDataTable[0];
+    CurrentLevelIndex = 0;
+
+    DefaultFallInterval = CurrentLevel.FallingSpeed;
     CurrentFallInterval = DefaultFallInterval;
     PrimaryActorTick.bCanEverTick = true;
     GridWidth = 15;
@@ -99,6 +118,8 @@ void ATetrisGrid::BeginPlay()
 {
     try {
         Super::BeginPlay();
+
+        OnUpdateScore.Broadcast();
 
         FString Path = TEXT("/Game/Blueprints/BP_TetrisBlock.BP_TetrisBlock_C");
         TetrisBlockBP = StaticLoadClass(UObject::StaticClass(), nullptr, *Path);
@@ -249,6 +270,9 @@ void ATetrisGrid::BeginPlay()
             SuperBlocks.Add(SuperUsdcClass);
         }
 
+        FString bombBlockPath = TEXT("/Game/Blueprints/BP_bomb.BP_bomb_C");
+        BombBlockClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *bombBlockPath));
+
         FString bullRunPath = TEXT("/Game/Blueprints/W_bullrun.W_bullrun_C");
         BullRunClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *bullRunPath));
 
@@ -258,20 +282,30 @@ void ATetrisGrid::BeginPlay()
         FString cameraShakePath = TEXT("/Game/Blueprints/BP_CameraShake.BP_CameraShake_C");
         CameraShakeClass = TSoftClassPtr<UCameraShakeBase>(FSoftObjectPath(cameraShakePath));
 
+        TetrisBoard = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, TEXT("/Game/Blueprints/BP_TetrisGrid.BP_TetrisGrid_C")));
+
+        GlowMaterialForBoard = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, TEXT("/Game/Materials/M_glow_inst.M_glow_inst")));
+
+        VictoryMaterialForBoard = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, TEXT("/Game/Materials/M_hologram_inst.M_hologram_inst")));
+
+        SetBoardMaterial(GlowMaterialForBoard, 0.0f, CurrentLevel.BackgroundColor);
+
         GetWorldTimerManager().SetTimer(TetrominoFallTimerHandle, this, &ATetrisGrid::MoveTetrominoDown, CurrentFallInterval, true);
 
+        UpdateMarketValues();
         GetWorldTimerManager().SetTimer(UpdateMarketValuesTimer, this, &ATetrisGrid::UpdateMarketValues, 1.0f, true, 0.0f);
 
         GetWorldTimerManager().SetTimer(UpdateMarketEventsTimer, this, &ATetrisGrid::UpdateMarketEvents, MarketEventsInterval, true, -1.0f);
 
         GetWorldTimerManager().SetTimer(UpdateComboTargetTimer, this, &ATetrisGrid::UpdateComboTarget, FMath::RandRange(30.0f, 45.0f), true, -1.0f);
 
-        GetWorldTimerManager().SetTimer(MoveBlocksTimerHandle, this, &ATetrisGrid::MoveBlocksToDropDown, 0.5f, true, 0.0f);
+        GetWorldTimerManager().SetTimer(MoveBlocksTimerHandle, this, &ATetrisGrid::MoveBlocksToDropDown, 0.1f, true, 0.0f);
 
 
         int32 NextTetrominoIndex = FMath::RandRange(0, TetrominoShapes.Num() - 1);
         NextTetrominoShape = TetrominoShapes[NextTetrominoIndex];
 
+        // PrepareFirstTetromino();
         PrepareNextTetromino();
 
         SpawnTetromino();
@@ -300,6 +334,42 @@ UTexture2D* ATetrisGrid::GetTexture(FString source)
     }
 
     return texture;
+}
+
+void ATetrisGrid::PrepareFirstTetromino()
+{
+    if (UWorld* World = GetWorld())
+    {
+        for (AActor* NextBlockActor : NextTetrominoBlocks)
+        {
+            NextBlockActor->Destroy();
+        }
+
+        NextTetrominoBlocks.Empty();
+
+        const FTetrominoShape& SelectedShape = NextTetrominoShape;
+        TSubclassOf<AActor> TetrominoBlueprint;
+        
+        int32 ShapeIndex = FMath::RandRange(0, TetrominoShapes.Num() - 1);
+        NextTetrominoShape = TetrominoShapes[ShapeIndex];
+
+        int32 CryptoBlockIndex;
+
+        for (const FVector2D& Offset : NextTetrominoShape.BlockOffsets)
+        {
+            CryptoBlockIndex = 0;
+            TetrominoBlueprint = TetrominoBlueprints[CryptoBlockIndex];
+
+            FVector BlockLocation = NextTetrominoSpawnLocation + FVector(Offset.X * 100.0f, 0.0f, Offset.Y * 100.0f);
+            AActor* Block = World->SpawnActor<AActor>(TetrominoBlueprint, BlockLocation, FRotator::ZeroRotator);
+
+            if (Block)
+            {
+                NextTetrominoBlocks.Add(Block);
+            }
+        }
+        UE_LOG(LogTemp, Warning, TEXT("Preparing regular tetromino"));
+    }
 }
 
 void ATetrisGrid::PrepareNextTetromino()
@@ -380,43 +450,46 @@ void ATetrisGrid::PrepareOfficerTetromino()
 
 void ATetrisGrid::SpawnTetromino()
 {
-    if (UWorld* World = GetWorld())
+    if (!bIsClearing)
     {
-        for (int32 i = 0; i < NextTetrominoShape.BlockOffsets.Num(); ++i)
+        if (UWorld* World = GetWorld())
         {
-            FVector2D Offset = NextTetrominoShape.BlockOffsets[i];
-            TSubclassOf<AActor> TetrominoBlueprint = NextTetrominoBlocks[i]->GetClass();
-            if (TetrominoBlueprint == SecClass)
+            for (int32 i = 0; i < NextTetrominoShape.BlockOffsets.Num(); ++i)
             {
-                UE_LOG(LogTemp, Error, TEXT("Whyyy?"));
-            }
-            FVector BlockLocation = SpawnLocation + FVector(Offset.X * 100.0f, 0.0f, Offset.Y * 100.0f);
-            AActor* NextBlock = World->SpawnActor<AActor>(TetrominoBlueprint, BlockLocation, FRotator::ZeroRotator);
+                FVector2D Offset = NextTetrominoShape.BlockOffsets[i];
+                TSubclassOf<AActor> TetrominoBlueprint = NextTetrominoBlocks[i]->GetClass();
+                if (TetrominoBlueprint == SecClass)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Whyyy?"));
+                }
+                FVector BlockLocation = SpawnLocation + FVector(Offset.X * 100.0f, 0.0f, Offset.Y * 100.0f);
+                AActor* NextBlock = World->SpawnActor<AActor>(TetrominoBlueprint, BlockLocation, FRotator::ZeroRotator);
 
-            if (NextBlock)
-            {
-                NextBlock->Tags.Add(FName("TetrisBlock"));
-                CurrentTetrominoBlocks.Add(NextBlock);
+                if (NextBlock)
+                {
+                    NextBlock->Tags.Add(FName("TetrisBlock"));
+                    CurrentTetrominoBlocks.Add(NextBlock);
+                }
             }
-        }
 
-        if (RoundsLeftBeforeSecSpawn != 1)
-        {
-            for (AActor* NextBlock : NextTetrominoBlocks)
+            if (RoundsLeftBeforeSecSpawn != 1)
             {
-                NextBlock->Destroy();
+                for (AActor* NextBlock : NextTetrominoBlocks)
+                {
+                    NextBlock->Destroy();
+                }
+                NextTetrominoBlocks.Empty();
+                PrepareNextTetromino();
             }
-            NextTetrominoBlocks.Empty();
-            PrepareNextTetromino();
-        }
-        else
-        {
-            for (AActor* NextBlock : NextTetrominoBlocks)
+            else
             {
-                NextBlock->Destroy();
+                for (AActor* NextBlock : NextTetrominoBlocks)
+                {
+                    NextBlock->Destroy();
+                }
+                NextTetrominoBlocks.Empty();
+                PrepareOfficerTetromino();
             }
-            NextTetrominoBlocks.Empty();
-            PrepareOfficerTetromino();
         }
     }
 }
@@ -518,27 +591,15 @@ void ATetrisGrid::MoveTetrominoDown()
 
         CurrentTetrominoBlocks.Empty();
 
-        for (int x = 0; x < GridWidth - 1; x++)
+        for (int32 x = 0; x < GridWidth; ++x)
         {
-            for (int y = 0; y < GridHeight - 1; y++)
+            for (int32 y = 0; y < GridHeight; ++y)
             {
-                AActor* GridBlock = Grid[x][y];
-                if (GridBlock != nullptr)
+                if (Grid[x][y] && IsValid(Grid[x][y]))
                 {
-                    if (IsValid(GridBlock) && GridBlock->Tags.Contains("TetrisBlock"))
+                    if (Grid[x][y]->Tags.Contains("CannotBlowUpYet"))
                     {
-                        FTetrisBlockValue* FoundValue = FindPointValueByName(*GridBlock->GetName());
-
-                        if (GridBlock->Tags.Contains(FName("CanClearThreeRows")))
-                        {
-                            if (FoundValue->BlockName + "_circ" == ComboTarget)
-                            {
-                                Combos = FMath::Clamp(Combos + 1, 0, 5);
-                            }
-                            ClearThreeRows(y);
-                            SpawnNiagaraSystem(TEXT("/Game/VFX/NS_Explosion"), GridBlock->GetActorLocation(), FoundValue->Color, FoundValue->Color);
-                            SpawnRowClearEffect(GridBlock->GetActorLocation(), FoundValue->Color);
-                        }
+                        Grid[x][y]->Tags.Remove("CannotBlowUpYet");
                     }
                 }
             }
@@ -559,22 +620,27 @@ void ATetrisGrid::MoveTetrominoDown()
         if (InOfficerBlocksRound)
         {
             ShouldSpawnOfficerTetromino = false;
-            GetWorldTimerManager().ClearTimer(SpawnDeadlySecRowTimer);
-            GetWorldTimerManager().SetTimer(SpawnDeadlySecRowTimer, this, &ATetrisGrid::SpawnDeadlySecRow, FMath::RandRange(5.0f, 10.0f), true, -1.0f);
             InOfficerBlocksRound = false;
         }
 
-        bIsAnimating = true;
+        GetWorldTimerManager().SetTimer(CheckIfReadyToSpawnTetromino, this, &ATetrisGrid::CheckIfReadyForNewTetromino, .2f, true);
+    }
+}
 
-        // if (ShouldSpawnOfficerTetromino)
-        // {
-        //     SpawnOfficerTetromino();
-        //     InOfficerBlocksRound = true;
-        // }
-        // else
-        // {
-        //     SpawnTetromino();
-        // }
+void ATetrisGrid::CheckIfReadyForNewTetromino()
+{
+    if (!bAnyDropInProgress)
+    {
+        GetWorldTimerManager().ClearTimer(CheckIfReadyToSpawnTetromino);
+        if (ShouldSpawnOfficerTetromino)
+        {
+            SpawnOfficerTetromino();
+            InOfficerBlocksRound = true;
+        }
+        else
+        {
+            SpawnTetromino();
+        }
     }
 }
 
@@ -634,6 +700,8 @@ void ATetrisGrid::CheckAndClearFullRows()
         if (bIsRowFull)
         {
             int32 RowScore = 0;
+            int maxInt32 = std::numeric_limits<int>::max();
+
             for (int32 x = 0; x < GridWidth; x++)
             {
                 FVector BlockLocation = FVector((x * 100.0f) - 1000.0f, 0.0f, y * 100.0f);
@@ -652,14 +720,14 @@ void ATetrisGrid::CheckAndClearFullRows()
 
                             if (CurrentMarketEvent == EMarketEvent::BullRun)
                             {
-                                IntValue *= 2;
+                                IntValue = FMath::Clamp(IntValue * 2, 0, maxInt32 - 1);
                             }
                             else if (CurrentMarketEvent == EMarketEvent::CryptoCrash)
                             {
                                 IntValue /= 2;
                             }
 
-                            RowScore += IntValue;
+                            RowScore = FMath::Clamp(RowScore + IntValue, 0, maxInt32 - 1);
                         }
                         else
                         {
@@ -671,11 +739,60 @@ void ATetrisGrid::CheckAndClearFullRows()
 
             ClearRow(y);
             MoveRowsDown(y);
+            Combos = FMath::Clamp(Combos + 1, 0, 5);
+            OnUpdateNotches.Broadcast();
 
-            Score += RowScore;
             y--;
+
+            IncrementScore(Score + RowScore);
         }
     }
+}
+
+void ATetrisGrid::MoveBlocksDownIncrementally()
+{
+    bool bAnyBlockMoved = false;
+
+    for (AActor* Block : BlocksToMove)
+    {
+        FVector CurrentLocation = Block->GetActorLocation();
+        FVector NewLocation = CurrentLocation - FVector(0.0f, 0.0f, 100.0f); // Move down by 10 units
+
+        FVector2D GridCoords = FVector2D((CurrentLocation.X + 1000.0f) / 100.0f, CurrentLocation.Z / 100.0f);
+        bool CanDo = CanMoveDown(GridCoords.X, GridCoords.Y);
+
+        if (CanDo)
+        {
+            Block->SetActorLocation(NewLocation);
+            bAnyBlockMoved = true;
+        }
+    }
+
+    if (bAnyBlockMoved)
+    {
+        // Continue moving blocks down
+        GetWorldTimerManager().SetTimer(MoveBlocksTimerHandle, this, &ATetrisGrid::MoveBlocksDownIncrementally, 0.5f, false);
+    }
+    else
+    {
+        // Stop the timer and clear the list of blocks to move
+        GetWorldTimerManager().ClearTimer(MoveBlocksTimerHandle);
+        BlocksToMove.Empty();
+        RowsToMove.Empty();
+    }
+}
+
+bool ATetrisGrid::CanMoveDown(int32 x, int32 y)
+{
+    if (x > 0 && y > 0)
+    {
+        if (Grid[x][y] != nullptr && Grid[x][y - 1] == nullptr)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void ATetrisGrid::ClearRow(int32 y)
@@ -931,9 +1048,13 @@ void ATetrisGrid::UpdateMarketValues()
         }
 
         int32 IntValue = FCString::Atoi(*PointValue.ScoreValue.Replace(TEXT("$"), TEXT("")).Replace(TEXT(","), TEXT("")).Replace(TEXT("."), TEXT("")));
-        int32 NewScore = IntValue * pointMultiplier;
-        FString DollarAmount = FString::Printf(TEXT("$%d"), NewScore);
+        int maxInt32 = std::numeric_limits<int>::max();
 
+        // have at least $2 as a value so the value can go back up if possible
+        int32 NewScore = FMath::Clamp(IntValue * pointMultiplier, 2, maxInt32);
+        FString DollarAmount = FString::Printf(TEXT("$%d"), NewScore);
+        
+        int maxFloat = std::numeric_limits<float>::max();
         PointValue.ScoreValue = DollarAmount;
 
         if (pointMultiplier <= 1.0f)
@@ -991,8 +1112,6 @@ void ATetrisGrid::UpdateMarketEvents() {
     MarketEventsInterval = FMath::RandRange(30.0f, 45.0f);
 }
 
-// unique interactions and power ups
-
 void ATetrisGrid::TriggerExplosion(AActor* HighValueToken1, AActor* HighValueToken2, FLinearColor ExplosionColor1, FLinearColor ExplosionColor2)
 {
     if (ExplosionCue)
@@ -1035,179 +1154,163 @@ void ATetrisGrid::TriggerExplosion(AActor* HighValueToken1, AActor* HighValueTok
             PlayerController->ClientStartCameraShake(LoadedCameraShakeClass);
         }
 
-        SpawnNiagaraSystem(TEXT("/Game/VFX/NS_Explosion"), (ExplosionLocation1 + ExplosionLocation2) / 2.0f, ExplosionColor1, ExplosionColor2);
+        SpawnNiagaraSystem(TEXT("/Game/VFX/NS_Explosion"), (Token1Location + Token2Location) / 2.0f, ExplosionColor1, ExplosionColor2);
     }
-
-    MoveBlocksDown();
 }
 
-void ATetrisGrid::MoveBlocksDown()
+void ATetrisGrid::CheckForBlocksToDrop()
 {
+    DropsArray.Empty();
+
     for (int32 x = 0; x < GridWidth; ++x)
     {
-        for (int32 y = 1; y < GridHeight; ++y)  // Start from row 1 as row 0 is the bottom
+        int32 EmptySpacesBelow = 0; // Tracks empty spaces below the current block
+
+        for (int32 y = 0; y < GridHeight; ++y) // Process the column from bottom to top
         {
-            if (Grid[x][y] != nullptr && Grid[x][y - 1] == nullptr)
+            if (Grid[x][y] == nullptr)
             {
-                if (Grid[x][y]->Tags.Contains(FName("TetrisBlock")))
+                EmptySpacesBelow++; // Count empty spaces
+            }
+            else if (Grid[x][y]->Tags.Contains(FName("TetrisBlock")))
+            {
+                // A block is found; calculate its drop distance
+                if (EmptySpacesBelow > 0)
                 {
-                    int32 DropDistance = 0;
+                    DropsArray.Add(FDropState(x, y, 0, EmptySpacesBelow)); // Store the block's drop state
+                }
+            }
+            else
+            {
+                // An obstacle is encountered; reset empty spaces below
+                EmptySpacesBelow = 0;
+            }
+        }
+    }
 
-                    // Calculate how far the block can drop
-                    for (int32 dropY = y - 1; dropY >= 0 && Grid[x][dropY] == nullptr; --dropY)
+
+    // Start the timer for the drops
+    if (DropsArray.Num() > 0)
+    {
+        GetWorldTimerManager().SetTimer(
+            DropTimerHandle, this,
+            &ATetrisGrid::HandleMultipleDrops,
+            0.2f, true
+        );
+    }
+}
+
+void ATetrisGrid::HandleMultipleDrops()
+{
+    bAnyDropInProgress = false;
+    
+    for (FDropState& Drop : DropsArray)
+    {
+        if (Drop.LoopIndex < Drop.DropDistance)
+        {
+            bAnyDropInProgress = true;
+
+            // Execute drop logic for the current block
+            FVector NewLocation = Grid[Drop.X][Drop.Y1]->GetActorLocation() - FVector(0.0f, 0.0f, 100.0f);
+            Grid[Drop.X][Drop.Y1]->SetActorLocation(NewLocation);
+
+            Grid[Drop.X][Drop.Y1 - 1] = Grid[Drop.X][Drop.Y1];
+            Grid[Drop.X][Drop.Y1] = nullptr;
+
+            Drop.Y1--;
+            Drop.LoopIndex++;
+        }
+    }
+
+    // Stop the timer if all drops are complete
+    if (!bAnyDropInProgress)
+    {
+        GetWorldTimerManager().ClearTimer(DropTimerHandle);
+        CheckForCombos();
+    }
+}
+
+void ATetrisGrid::MoveBlocksToDropDown()
+{
+    if (!bIsCheckingForCombos)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("BlocksToDrop length: %d"), BlocksToDrop.Num());
+
+        bIsAnimating = true;
+
+        bool bBlockMoved = false;
+
+        for (auto& Elem : BlocksToDrop)
+        {
+            AActor* Actor = Elem.Key;
+            int32& Value = Elem.Value;
+
+            if (Value > 0)
+            {
+                FVector CurrentLocation = Actor->GetActorLocation();
+                FVector NewLocation = CurrentLocation - FVector(0.0f, 0.0f, 100.0f);
+
+                // Check if the new location is above the bottom of the board
+                if (NewLocation.Z >= 0.0f)
+                {
+                    Actor->SetActorLocation(NewLocation);
+                    Value = Value - 1;
+                    bBlockMoved = true;
+
+                    UE_LOG(LogTemp, Warning, TEXT("Dropping block %s, Value: %d"), *Actor->GetName(), Value);
+                }
+                else
+                {
+                    Value = 0; // Set Value to 0 if it has reached the bottom
+                    UE_LOG(LogTemp, Warning, TEXT("Block %s has reached the bottom."), *Actor->GetName());
+                }
+            }
+        }
+
+        // If no blocks moved, end the animation
+        if (!bBlockMoved)
+        {
+            bIsAnimating = false;
+        }
+    }
+}
+
+void ATetrisGrid::CheckForCombos()
+{
+    bIsCheckingForCombos = true;
+    bool bHasFoundCombo = false;
+
+    for (int x = 0; x < GridWidth - 1; x++)
+    {
+        for (int y = 0; y < GridHeight - 1; y++)
+        {
+            AActor* GridBlock = Grid[x][y];
+            if (GridBlock != nullptr)
+            {
+                if (IsValid(GridBlock) && GridBlock->Tags.Contains("TetrisBlock"))
+                {
+                    FTetrisBlockValue* FoundValue = FindPointValueByName(*GridBlock->GetName());
+
+                    if (GridBlock->Tags.Contains(FName("CanClearThreeRows")) && !GridBlock->Tags.Contains(FName("CannotBlowUpYet")))
                     {
-                        DropDistance++;
+                        if (FoundValue->BlockName + "_circ" == ComboTarget)
+                        {
+                            // Combos = FMath::Clamp(Combos + 1, 0, 5);
+                        }
+                        ClearThreeRows(y);
+                        SpawnNiagaraSystem(TEXT("/Game/VFX/NS_Explosion"), GridBlock->GetActorLocation(), FoundValue->Color, FoundValue->Color);
+                        SpawnRowClearEffect(GridBlock->GetActorLocation(), FoundValue->Color);
+                        bHasFoundCombo = true;
                     }
-
-                    if (DropDistance > 0)
-                    {
-                        BlocksToDrop.Add(Grid[x][y], DropDistance);
-
-                        // Update the grid
-                        Grid[x][y - DropDistance] = Grid[x][y];
-                        Grid[x][y] = nullptr;
-                    }
+                }
+                else if (IsValid(GridBlock) && GridBlock->Tags.Contains("BombBlock"))
+                {
+                    SpawnBombExplosion(GridBlock);
                 }
             }
         }
     }
 
-    CheckForCombos();
-}
-
-void ATetrisGrid::MoveBlocksToDropDown()
-{
-    UE_LOG(LogTemp, Warning, TEXT("BlocksToDrop length: %d"), BlocksToDrop.Num());
-    if (BlocksToDrop.Num() == 0)
-    {
-        if (bIsAnimating)
-        {
-            bIsAnimating = false;
-            OnAnimationComplete();
-        }
-        return;
-    }
-
-    bIsAnimating = true;
-
-    for (auto& Elem : BlocksToDrop)
-    {
-        AActor* Actor = Elem.Key;
-        int32& Value = Elem.Value;
-
-        if (Value > 0)
-        {
-            FVector NewLocation = Actor->GetActorLocation() - FVector(0.0f, 0.0f, 100.0f);
-            Actor->SetActorLocation(NewLocation);
-
-            Value = Value - 1;
-
-            UE_LOG(LogTemp, Warning, TEXT("Dropping block %s, Value: %d"), *Actor->GetName(), Value);
-        }
-        else
-        {
-            BlocksToDrop.Remove(Actor);
-        }
-    }
-}
-
-void ATetrisGrid::OnAnimationComplete()
-{
-    CheckForCombos();
-    
-    if (ShouldSpawnOfficerTetromino)
-    {
-        SpawnOfficerTetromino();
-        InOfficerBlocksRound = true;
-    }
-    else
-    {
-        SpawnTetromino();
-    }
-}
-
-// void ATetrisGrid::MoveBlockDown(AActor* Block, int32 DropDistance)
-// {
-//     FVector NewLocation = Block->GetActorLocation() - FVector(0.0f, 0.0f, 100.0f);
-//     Block->SetActorLocation(NewLocation);
-
-//     int32 CurrentIndex = BlocksToDrop[Block];
-//     int32 NextIndex = CurrentIndex + 1;
-
-//     if (NextIndex < DropDistance)
-//     {
-//         BlocksToDrop[Block] = NextIndex;
-//         GetWorldTimerManager().SetTimer(MoveBlocksTimerHandle, [this, Block, DropDistance]()
-//         {
-//             MoveBlockDown(Block, DropDistance);
-//         }, BlockMoveInterval, false);
-//     }
-//     else
-//     {
-//         BlocksToDrop.Remove(Block);
-
-//         // Convert world coordinates to grid coordinates
-//         FVector ActorLocation = Block->GetActorLocation();
-//         int32 GridX = FMath::RoundToInt((ActorLocation.X + 500.0f) / 100.0f);
-//         int32 GridY = FMath::RoundToInt(ActorLocation.Z / 100.0f);
-
-//         // Ensure the actor is not already present at the new location
-//         if (GridX >= 0 && GridX < GridWidth && GridY >= 0 && GridY < GridHeight)
-//         {
-//             Grid[GridX][GridY] = Block;
-//         }
-
-//         UE_LOG(LogTemp, Log, TEXT("Moved block to new position at Grid[%d][%d]"), GridX, GridY);
-//     }
-// }
-
-// void ATetrisGrid::MoveBlocksDown()
-// {
-//     BlocksToDrop.Empty(); // Clear previous blocks to drop
-
-//     for (int32 x = 0; x < GridWidth; ++x)
-//     {
-//         for (int32 y = 1; y < GridHeight; ++y) // Start from row 1 as row 0 is the bottom
-//         {
-//             if (Grid[x][y] != nullptr && Grid[x][y - 1] == nullptr)
-//             {
-//                 if (Grid[x][y]->Tags.Contains(FName("TetrisBlock")))
-//                 {
-//                     int32 DropDistance = 0;
-
-//                     // Calculate how far the block can drop
-//                     for (int32 dropY = y - 1; dropY >= 0 && Grid[x][dropY] == nullptr; --dropY)
-//                     {
-//                         DropDistance++;
-//                     }
-
-//                     if (DropDistance > 0)
-//                     {
-//                         AActor* Block = Grid[x][y];
-//                         BlocksToDrop.Add(Block, 0); // Initialize drop index
-
-//                         // Clear the grid spot
-//                         Grid[x][y] = nullptr;
-
-//                         // Start moving the block down incrementally
-//                         MoveBlockDown(Block, DropDistance);
-
-//                         UE_LOG(LogTemp, Log, TEXT("Scheduled move from (%d, %d) to (%d, %d)"), x, y, x, y - DropDistance);
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-//     // Delay combo check to after all blocks have moved
-//     GetWorldTimerManager().SetTimer(MoveBlocksTimerHandle, [this]()
-//     {
-//         CheckForCombos();
-//     }, (BlockMoveInterval * GridHeight), false);
-// }
-
-void ATetrisGrid::CheckForCombos()
-{
     TArray<AActor*> BlocksToCheckForExplosions;
 
     for (int32 x = 0; x < GridWidth; ++x)
@@ -1218,11 +1321,23 @@ void ATetrisGrid::CheckForCombos()
 
             if (Block)
             {
-                // Check for super blocks
-                if (CheckForSuperBlockFormation(Block))
+                if (CurrentLevel.BlockPairingSet <= 4)
                 {
-                    // If a super block is formed, skip checking for explosions for this block
-                    continue;
+                    // Check for 4-of-a-kind
+                    if (CheckForSuperDuperBlockFormation(Block))
+                    {
+                        continue;
+                    }
+                }
+
+                if (CurrentLevel.BlockPairingSet <= 3)
+                {
+                    // Check for super blocks
+                    if (CheckForSuperBlockFormation(Block))
+                    {
+                        // If a super block is formed, skip checking for explosions for this block
+                        continue;
+                    }
                 }
 
                 // Add the block to the list for explosion checks
@@ -1231,23 +1346,41 @@ void ATetrisGrid::CheckForCombos()
         }
     }
 
-    for (AActor* Block : BlocksToCheckForExplosions)
+    if (CurrentLevel.BlockPairingSet <= 2)
     {
-        // Check for horizontal and vertical high-value token combinations
-        CheckForHorizontalExplosions(Block);
-        CheckForVerticalExplosions(Block);
+        for (AActor* Block : BlocksToCheckForExplosions)
+        {
+            // Check for horizontal and vertical high-value token combinations
+            bool bHorizontal = CheckForHorizontalExplosions(Block);
+            bool bVertical = CheckForVerticalExplosions(Block);
+
+            if (bHorizontal || bVertical)
+            {
+                bHasFoundCombo = true;
+            }
+        }
     }
+
+    if (bHasFoundCombo)
+    {
+        CheckForBlocksToDrop();
+    }
+
+    CheckAndClearFullRows();
+
+    bIsCheckingForCombos = false;
 }
 
 void ATetrisGrid::DestroyBlockAtLocation(FVector Location)
 {
     TArray<AActor*> FoundActors;
     UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), FoundActors);
+    int maxInt32 = std::numeric_limits<int>::max();
 
     for (AActor* Actor : FoundActors)
     {
         FVector ActorLocation = Actor->GetActorLocation();
-        if (Actor->Tags.Contains(FName("TetrisBlock")) && ActorLocation == Location)
+        if ((Actor->Tags.Contains(FName("TetrisBlock")) || Actor->Tags.Contains("BombBlock")) && ActorLocation == Location)
         {
             // Convert world coordinates to grid coordinates
             int32 GridX = FMath::RoundToInt((ActorLocation.X + 1000.0f) / 100.0f);
@@ -1260,18 +1393,18 @@ void ATetrisGrid::DestroyBlockAtLocation(FVector Location)
 
                 if (FoundValue)
                 {
-                    int32 IntValue = FCString::Atoi(*FoundValue->ScoreValue.Replace(TEXT("$"), TEXT("")).Replace(TEXT(","), TEXT("")).Replace(TEXT("."), TEXT("")));
+                    int32 IntValue = FMath::Clamp(FCString::Atoi(*FoundValue->ScoreValue.Replace(TEXT("$"), TEXT("")).Replace(TEXT(","), TEXT("")).Replace(TEXT("."), TEXT(""))), 0, maxInt32 - 1);
 
                     if (CurrentMarketEvent == EMarketEvent::BullRun)
                     {
-                        IntValue *= 2;
+                        IntValue = FMath::Clamp(IntValue * 2, 0, maxInt32 - 1);
                     }
                     else if (CurrentMarketEvent == EMarketEvent::CryptoCrash)
                     {
                         IntValue /= 2;
                     }
 
-                    Score += IntValue;
+                    IncrementScore(Score + IntValue);
                 }
 
                 SetGrid(GridX, GridY, nullptr);
@@ -1290,7 +1423,8 @@ void ATetrisGrid::UpdateGridAtLocation(FVector Location)
     {
         if (Grid[GridX][GridY] != nullptr)
         {
-            if (Grid[GridX][GridY]->Tags.Contains(FName("TetrisBlock")))
+            if ((Grid[GridX][GridY]->Tags.Contains(FName("TetrisBlock")) || Grid[GridX][GridY]->Tags.Contains(FName("BombBlock"))) && 
+            !Grid[GridX][GridY]->Tags.Contains(FName("SuperBlock")))
             {
                 Grid[GridX][GridY]->Destroy();
                 Grid[GridX][GridY] = nullptr;
@@ -1299,13 +1433,15 @@ void ATetrisGrid::UpdateGridAtLocation(FVector Location)
     }
 }
 
-void ATetrisGrid::CheckForExplosions(AActor* Actor, FVector Direction)
+bool ATetrisGrid::CheckForExplosions(AActor* Actor, FVector Direction)
 {
-    if (Actor->Tags.Contains(FName("SuperBlock")))
+    if (Actor->Tags.Contains(FName("SuperBlock")) || Actor->Tags.Contains(FName("GlowBlock")))
     {
-        return;
+        return false;
     }
 
+    bool bToReturn = false;
+    
     FVector BlockLocation = Actor->GetActorLocation();
     FVector TargetLocation = BlockLocation + Direction;
 
@@ -1319,145 +1455,699 @@ void ATetrisGrid::CheckForExplosions(AActor* Actor, FVector Direction)
         {
             static const TArray<FString> HighRiskBlocks = { "bitcoin", "ethereum", "solana" };
             static const TArray<FString> StablecoinBlocks = { "usdc", "tether" };
-            if ((HighRiskBlocks.Contains(ActorValue->BlockName) && HighRiskBlocks.Contains(AdjacentValue->BlockName)) || 
-                ActorValue->BlockName == AdjacentValue->BlockName)
+            if (ActorValue->BlockName == AdjacentValue->BlockName)
             {
-                TriggerExplosion(Actor, AdjacentActor, ActorValue->Color, AdjacentValue->Color);
-
-                if (ActorValue->BlockName + "_circ" == ComboTarget || AdjacentValue->BlockName + "_circ" == ComboTarget)
+                if (Actor != AdjacentActor)
                 {
-                    Combos = FMath::Clamp(Combos + 1, 0, 5);
-                }
+                    bToReturn = true;
+                    TriggerExplosion(Actor, AdjacentActor, ActorValue->Color, AdjacentValue->Color);
 
-                // trigger market update
-                if (HighRiskBlocks.Contains(ActorValue->BlockName) && HighRiskBlocks.Contains(AdjacentValue->BlockName))
-                {
-                    // trigger market shutdown
-                    for (FTetrisBlockValue& PointValue : PointValues)
+                    if (ActorValue->BlockName + "_circ" == ComboTarget || AdjacentValue->BlockName + "_circ" == ComboTarget)
                     {
-                        PointValue.ForceVolatilityToGoDown = true;
+                        // Combos = FMath::Clamp(Combos + 1, 0, 5);
                     }
-                }
-                else if (StablecoinBlocks.Contains(ActorValue->BlockName) && StablecoinBlocks.Contains(AdjacentValue->BlockName))
-                {
-                    // trigger a market uptick
-                    for (FTetrisBlockValue& PointValue : PointValues)
+
+                    // trigger market update
+                    if (HighRiskBlocks.Contains(ActorValue->BlockName) && HighRiskBlocks.Contains(AdjacentValue->BlockName))
                     {
-                        PointValue.ForceVolatilityToGoUp = true;
+                        // trigger market shutdown
+                        for (FTetrisBlockValue& PointValue : PointValues)
+                        {
+                            PointValue.ForceVolatilityToGoDown = true;
+                        }
+                    }
+                    else if (StablecoinBlocks.Contains(ActorValue->BlockName) && StablecoinBlocks.Contains(AdjacentValue->BlockName))
+                    {
+                        // trigger a market uptick
+                        for (FTetrisBlockValue& PointValue : PointValues)
+                        {
+                            PointValue.ForceVolatilityToGoUp = true;
+                        }
                     }
                 }
             }
         }
     }
+
+    return bToReturn;
 }
 
-void ATetrisGrid::CheckForHorizontalExplosions(AActor* Actor)
+bool ATetrisGrid::CheckForHorizontalExplosions(AActor* Actor)
 {
-    CheckForExplosions(Actor, FVector(100.0f, 0.0f, 0.0f));
+    return CheckForExplosions(Actor, FVector(100.0f, 0.0f, 0.0f));
 }
 
-void ATetrisGrid::CheckForVerticalExplosions(AActor* Actor)
+bool ATetrisGrid::CheckForVerticalExplosions(AActor* Actor)
 {
-    CheckForExplosions(Actor, FVector(0.0f, 0.0f, 100.0f));
+    return CheckForExplosions(Actor, FVector(0.0f, 0.0f, 100.0f));
 }
+
+// bool ATetrisGrid::CheckForSuperBlockFormation(AActor* Actor)
+// {
+//     if (IsValid(Actor))
+//     {
+//         // Define relative positions for possible super block formations
+//         static const TArray<TArray<FVector>> Directions = {
+//             // Horizontal
+//             { FVector(100.0f, 0.0f, 0.0f), FVector(200.0f, 0.0f, 0.0f) },
+//             // Vertical
+//             { FVector(0.0f, 0.0f, 100.0f), FVector(0.0f, 0.0f, 200.0f) },
+//             // L-shape configurations
+//             { FVector(100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, 100.0f) },
+//             { FVector(-100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, 100.0f) },
+//             { FVector(100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, -100.0f) },
+//             { FVector(-100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, -100.0f) },
+//             { FVector(100.0f, 0.0f, 0.0f), FVector(100.0f, 0.0f, 100.0f) },
+//             { FVector(100.0f, 0.0f, 0.0f), FVector(100.0f, 0.0f, -100.0f) },
+//             { FVector(0.0f, 0.0f, 100.0f), FVector(100.0f, 0.0f, 100.0f) },
+//             { FVector(0.0f, 0.0f, -100.0f), FVector(100.0f, 0.0f, -100.0f) }
+//         };
+
+//         FVector BlockLocation = Actor->GetActorLocation();
+//         FTetrisBlockValue* ActorValue = FindPointValueByName(*Actor->GetName());
+//         if (!ActorValue) return false;
+
+//         TArray<AActor*> FoundActors;
+//         UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), FoundActors);
+
+//         for (const auto& DirectionSet : Directions)
+//         {
+//             FVector Loc1 = BlockLocation + DirectionSet[0];
+//             FVector Loc2 = BlockLocation + DirectionSet[1];
+
+//             AActor* Actor1 = nullptr;
+//             AActor* Actor2 = nullptr;
+
+//             for (AActor* FoundActor : FoundActors)
+//             {
+//                 if (FoundActor->Tags.Contains(FName("GlowBlock"))) continue;
+
+//                 FVector FoundLocation = FoundActor->GetActorLocation();
+//                 if (FoundLocation == Loc1)
+//                 {
+//                     Actor1 = FoundActor;
+//                 }
+//                 else if (FoundLocation == Loc2)
+//                 {
+//                     Actor2 = FoundActor;
+//                 }
+
+//                 if (Actor1 && Actor2)
+//                 {
+//                     break;
+//                 }
+//             }
+
+//             if (Actor1 && Actor2)
+//             {
+//                 FTetrisBlockValue* Value1 = FindPointValueByName(*Actor1->GetName());
+//                 FTetrisBlockValue* Value2 = FindPointValueByName(*Actor2->GetName());
+
+//                 if (Value1 && Value2 && ActorValue->BlockName == Value1->BlockName && ActorValue->BlockName == Value2->BlockName)
+//                 {
+//                     TargetActors = {
+//                         { Actor, Actor1, Actor2 },
+//                         0.0f,
+//                         Actor->GetName(),
+//                         { Actor->GetActorLocation(), Actor1->GetActorLocation(), Actor2->GetActorLocation() }
+//                     };
+//                     GlowBlocks();
+
+//                     return true;
+//                 }
+//             }
+//         }
+
+//         return false;
+//     }
+//     else
+//     {
+//         return false;
+//     }
+// }
 
 bool ATetrisGrid::CheckForSuperBlockFormation(AActor* Actor)
 {
-    // Define relative positions for possible super block formations
-    static const TArray<TArray<FVector>> Directions = {
-        // Horizontal
-        { FVector(100.0f, 0.0f, 0.0f), FVector(200.0f, 0.0f, 0.0f) },
-        // Vertical
-        { FVector(0.0f, 0.0f, 100.0f), FVector(0.0f, 0.0f, 200.0f) },
-        // L-shape configurations
-        { FVector(100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, 100.0f) },
-        { FVector(-100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, 100.0f) },
-        { FVector(100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, -100.0f) },
-        { FVector(-100.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, -100.0f) },
-        { FVector(100.0f, 0.0f, 0.0f), FVector(100.0f, 0.0f, 100.0f) },
-        { FVector(100.0f, 0.0f, 0.0f), FVector(100.0f, 0.0f, -100.0f) },
-        { FVector(0.0f, 0.0f, 100.0f), FVector(100.0f, 0.0f, 100.0f) },
-        { FVector(0.0f, 0.0f, -100.0f), FVector(100.0f, 0.0f, -100.0f) }
-    };
+    if (!IsValid(Actor)) return false;
+    if (Actor->GetName().Contains("super")) return false;
 
     FVector BlockLocation = Actor->GetActorLocation();
     FTetrisBlockValue* ActorValue = FindPointValueByName(*Actor->GetName());
     if (!ActorValue) return false;
 
-    TArray<AActor*> FoundActors;
-    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), FoundActors);
+    // Stores blocks already visited to prevent infinite loops
+    TSet<AActor*> VisitedBlocks;
+    TArray<AActor*> MatchingBlocks;
 
-    for (const auto& DirectionSet : Directions)
+    // Lambda function for recursive DFS
+    auto DFS = [&](AActor* CurrentBlock, auto&& DFSRef) -> void
     {
-        FVector Loc1 = BlockLocation + DirectionSet[0];
-        FVector Loc2 = BlockLocation + DirectionSet[1];
+        if (!IsValid(CurrentBlock) || VisitedBlocks.Contains(CurrentBlock)) return;
 
-        AActor* Actor1 = nullptr;
-        AActor* Actor2 = nullptr;
+        // Mark the current block as visited
+        VisitedBlocks.Add(CurrentBlock);
+        MatchingBlocks.Add(CurrentBlock);
 
-        for (AActor* FoundActor : FoundActors)
+        FVector CurrentLocation = CurrentBlock->GetActorLocation();
+
+        // Check neighbors in four directions: left, right, up, down
+        static const TArray<FVector> Directions = {
+            FVector(100.0f, 0.0f, 0.0f),  // Right
+            FVector(-100.0f, 0.0f, 0.0f), // Left
+            FVector(0.0f, 0.0f, 100.0f),  // Up
+            FVector(0.0f, 0.0f, -100.0f)  // Down
+        };
+
+        for (const FVector& Direction : Directions)
         {
-            FVector FoundLocation = FoundActor->GetActorLocation();
-            if (FoundLocation == Loc1)
+            FVector NeighborLocation = CurrentLocation + Direction;
+
+            // Find the neighbor block
+            AActor* NeighborBlock = nullptr;
+            for (AActor* FoundActor : TActorRange<AActor>(GetWorld()))
             {
-                Actor1 = FoundActor;
-            }
-            else if (FoundLocation == Loc2)
-            {
-                Actor2 = FoundActor;
+                if (FoundActor->GetActorLocation() == NeighborLocation &&
+                    !VisitedBlocks.Contains(FoundActor))
+                {
+                    FTetrisBlockValue* NeighborValue = FindPointValueByName(*FoundActor->GetName());
+                    if (NeighborValue && NeighborValue->BlockName == ActorValue->BlockName && 
+                        !Actor->Tags.Contains("GlowBlock") && !FoundActor->Tags.Contains("GlowBlock") &&
+                        !Actor->GetName().Contains("super") && !FoundActor->GetName().Contains("super"))
+                    {
+                        NeighborBlock = FoundActor;
+                        break;
+                    }
+                }
             }
 
-            if (Actor1 && Actor2)
+            // Recur to the neighbor block if it's valid
+            if (NeighborBlock)
             {
-                break;
+                DFSRef(NeighborBlock, DFSRef);
+            }
+        }
+    };
+
+    // Start the DFS from the initial block
+    DFS(Actor, DFS);
+
+    // Check if enough blocks were matched (e.g., 4 blocks for a "super duper block")
+    if (MatchingBlocks.Num() >= 3)
+    {
+        // Collect block locations
+        TArray<FVector> BlockLocations;
+        TArray<AActor*> FirstMatchingBlocks;
+        // for (AActor* Block : MatchingBlocks)
+        for (int32 i = 0; i < 3; ++i)
+        {
+            AActor* Block = MatchingBlocks[i];
+            if (IsValid(Block))
+            {
+                FirstMatchingBlocks.Add(Block);
+                BlockLocations.Add(Block->GetActorLocation());
+                Block->Tags.Add(FName("ToGlow"));
             }
         }
 
-        if (Actor1 && Actor2)
+        // Store matching blocks and trigger effects
+        TargetActors = {
+            FirstMatchingBlocks,
+            0.0f,
+            Actor->GetName(),
+            BlockLocations
+        };
+        // GlowSuperDuperBlocks();
+        GlowBlocks();
+
+        return true;
+    }
+
+    return false;
+}
+
+bool ATetrisGrid::CheckForSuperDuperBlockFormation(AActor* Actor)
+{
+    if (!IsValid(Actor)) return false;
+    if (Actor->GetName().Contains("super")) return false;
+
+    FVector BlockLocation = Actor->GetActorLocation();
+    FTetrisBlockValue* ActorValue = FindPointValueByName(*Actor->GetName());
+    if (!ActorValue) return false;
+
+    // Stores blocks already visited to prevent infinite loops
+    TSet<AActor*> VisitedBlocks;
+    TArray<AActor*> MatchingBlocks;
+
+    // Lambda function for recursive DFS
+    auto DFS = [&](AActor* CurrentBlock, auto&& DFSRef) -> void
+    {
+        if (!IsValid(CurrentBlock) || VisitedBlocks.Contains(CurrentBlock)) return;
+
+        // Mark the current block as visited
+        VisitedBlocks.Add(CurrentBlock);
+        MatchingBlocks.Add(CurrentBlock);
+
+        FVector CurrentLocation = CurrentBlock->GetActorLocation();
+
+        // Check neighbors in four directions: left, right, up, down
+        static const TArray<FVector> Directions = {
+            FVector(100.0f, 0.0f, 0.0f),  // Right
+            FVector(-100.0f, 0.0f, 0.0f), // Left
+            FVector(0.0f, 0.0f, 100.0f),  // Up
+            FVector(0.0f, 0.0f, -100.0f)  // Down
+        };
+
+        for (const FVector& Direction : Directions)
         {
-            FTetrisBlockValue* Value1 = FindPointValueByName(*Actor1->GetName());
-            FTetrisBlockValue* Value2 = FindPointValueByName(*Actor2->GetName());
+            FVector NeighborLocation = CurrentLocation + Direction;
 
-            if (Value1 && Value2 && ActorValue->BlockName == Value1->BlockName && ActorValue->BlockName == Value2->BlockName)
+            // Find the neighbor block
+            AActor* NeighborBlock = nullptr;
+            for (AActor* FoundActor : TActorRange<AActor>(GetWorld()))
             {
-                DestroyBlockAtLocation(Actor->GetActorLocation());
-                DestroyBlockAtLocation(Actor1->GetActorLocation());
-                DestroyBlockAtLocation(Actor2->GetActorLocation());
-
-                UpdateGridAtLocation(Actor->GetActorLocation());
-                UpdateGridAtLocation(Actor1->GetActorLocation());
-                UpdateGridAtLocation(Actor2->GetActorLocation());
-
-                int32 SuperBlockIndex = FindPointValueIndexByName(*Actor->GetName());
-                if (SuperBlockIndex != INDEX_NONE)
+                if (FoundActor->GetActorLocation() == NeighborLocation &&
+                    !VisitedBlocks.Contains(FoundActor))
                 {
-                    TSubclassOf<AActor> BlockClass = SuperBlocks[SuperBlockIndex];
-
-                    FActorSpawnParameters SpawnParams;
-                    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-
-                    FVector WorldLocation = Actor->GetActorLocation();
-                    AActor* SuperBlock = GetWorld()->SpawnActor<AActor>(BlockClass, WorldLocation, FRotator::ZeroRotator, SpawnParams);
-                    if (SuperBlock)
+                    FTetrisBlockValue* NeighborValue = FindPointValueByName(*FoundActor->GetName());
+                    if (NeighborValue && NeighborValue->BlockName == ActorValue->BlockName && 
+                        !Actor->Tags.Contains("GlowBlock") && !FoundActor->Tags.Contains("GlowBlock") &&
+                        !Actor->GetName().Contains("super") && !FoundActor->GetName().Contains("super"))
                     {
-                        SuperBlock->Tags.Add(FName("TetrisBlock"));
-                        SuperBlock->Tags.Add(FName("SuperBlock"));
-
-                        int32 GridX = FMath::RoundToInt((WorldLocation.X + 1000.0f) / 100.0f);
-                        int32 GridY = FMath::RoundToInt(WorldLocation.Z / 100.0f);
-
-                        SetGrid(GridX, GridY, SuperBlock);
-                        SuperBlock->Tags.Add(FName("CanClearThreeRows"));
+                        NeighborBlock = FoundActor;
+                        break;
                     }
                 }
+            }
 
-                MoveBlocksDown();
-                return true;
+            // Recur to the neighbor block if it's valid
+            if (NeighborBlock)
+            {
+                DFSRef(NeighborBlock, DFSRef);
+            }
+        }
+    };
+
+    // Start the DFS from the initial block
+    DFS(Actor, DFS);
+
+    // Check if enough blocks were matched (e.g., 4 blocks for a "super duper block")
+    if (MatchingBlocks.Num() >= 4)
+    {
+        // Collect block locations
+        TArray<FVector> BlockLocations;
+        TArray<AActor*> FirstMatchingBlocks;
+        // for (AActor* Block : MatchingBlocks)
+        for (int32 i = 0; i < 4; ++i)
+        {
+            AActor* Block = MatchingBlocks[i];
+            if (IsValid(Block))
+            {
+                FirstMatchingBlocks.Add(Block);
+                BlockLocations.Add(Block->GetActorLocation());
+                Block->Tags.Add(FName("ToGlow"));
+            }
+        }
+
+        // Store matching blocks and trigger effects
+        TargetActors = {
+            FirstMatchingBlocks,
+            0.0f,
+            Actor->GetName(),
+            BlockLocations
+        };
+        // GlowSuperDuperBlocks();
+        GlowBlocks();
+
+        return true;
+    }
+
+    return false;
+}
+
+void ATetrisGrid::MakeSuperBlock()
+{
+    if (!bIsClearing)
+    {
+        int32 SuperBlockIndex = FindPointValueIndexByName(*TargetActors.BlockName);
+        if (SuperBlockIndex != INDEX_NONE)
+        {
+            TSubclassOf<AActor> BlockClass = SuperBlocks[SuperBlockIndex];
+
+            FActorSpawnParameters SpawnParams;
+            SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+            FVector WorldLocation = TargetActors.SuperBlockDropSpots[0];
+            AActor* SuperBlock = GetWorld()->SpawnActor<AActor>(BlockClass, WorldLocation, FRotator::ZeroRotator, SpawnParams);
+            if (SuperBlock)
+            {
+                SuperBlock->Tags.Add(FName("TetrisBlock"));
+                SuperBlock->Tags.Add(FName("SuperBlock"));
+                SuperBlock->Tags.Add(FName("CannotBlowUpYet"));
+
+                int32 GridX = FMath::RoundToInt((WorldLocation.X + 1000.0f) / 100.0f);
+                int32 GridY = FMath::RoundToInt(WorldLocation.Z / 100.0f);
+
+                SetGrid(GridX, GridY, SuperBlock);
+                SuperBlock->Tags.Add(FName("CanClearThreeRows"));
+            }
+        }
+
+        CheckForBlocksToDrop();
+    }
+}
+
+void ATetrisGrid::MakeSuperDuperBlock()
+{
+    if (!bIsClearing)
+    {
+        if (BombBlockClass)
+        {
+            FActorSpawnParameters SpawnParams;
+            SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+            FVector WorldLocation = TargetActors.SuperBlockDropSpots[0];
+            AActor* BombBlock = GetWorld()->SpawnActor<AActor>(BombBlockClass, WorldLocation, FRotator::ZeroRotator, SpawnParams);
+            if (BombBlock)
+            {
+                BombBlock->Tags.Add(FName("BombBlock"));
+                BombBlock->Tags.Add(FName("SuperDuperBlock"));
+                BombBlock->Tags.Add(FName("CannotBlowUpYet"));
+
+                int32 GridX = FMath::RoundToInt((WorldLocation.X + 1000.0f) / 100.0f);
+                int32 GridY = FMath::RoundToInt(WorldLocation.Z / 100.0f);
+
+                SetGrid(GridX, GridY, BombBlock);
+                if (GridX + 1 < GridWidth)
+                {
+                    if (Grid[GridX + 1][GridY] != nullptr)
+                    {
+                        FVector Loc = FVector(((GridX + 1) * 100.0f) - 1000.0f, 0.0f, GridY * 100.0f);
+                        DestroyBlockAtLocation(Loc);
+                        UpdateGridAtLocation(Loc);
+                    }
+                    SetGrid(GridX + 1, GridY, BombBlock);
+                }
+                if (GridY + 1 < GridHeight)
+                {
+                    if (Grid[GridX][GridY + 1] != nullptr)
+                    {
+                        FVector Loc = FVector((GridX * 100.0f) - 1000.0f, 0.0f, (GridY + 1) * 100.0f);
+                        DestroyBlockAtLocation(Loc);
+                        UpdateGridAtLocation(Loc);
+                    }
+                    SetGrid(GridX, GridY + 1, BombBlock);
+                }
+                if (GridX + 1 < GridWidth && GridY + 1 < GridHeight)
+                {
+                    if (Grid[GridX + 1][GridY + 1] != nullptr)
+                    {
+                        FVector Loc = FVector(((GridX + 1) * 100.0f) - 1000.0f, 0.0f, (GridY + 1) * 100.0f);
+                        DestroyBlockAtLocation(Loc);
+                        UpdateGridAtLocation(Loc);
+                    }
+                    SetGrid(GridX + 1, GridY + 1, BombBlock);
+                }
+                BombBlock->Tags.Add(FName("CanSuperDuper"));
+            }
+        }
+
+        CheckForBlocksToDrop();
+    }
+}
+
+void ATetrisGrid::GlowBlocks()
+{
+    if (TargetActors.GlowBlocks.Num() < 3) return; // Ensure we have at least 3 actors
+
+    for (AActor* Actor : TargetActors.GlowBlocks)
+    {
+        if (Actor && IsValid(Actor) && !Actor->Tags.Contains(FName("GlowBlock")) && Actor->Tags.Contains(FName("ToGlow")))
+        {
+            Actor->Tags.Add(FName("GlowBlock"));
+            UStaticMeshComponent* ActorMesh = Actor->FindComponentByClass<UStaticMeshComponent>();
+            if (ActorMesh)
+            {
+                // Get the Material from the Static Mesh Component
+                UMaterialInterface* ActorMaterial = ActorMesh->GetMaterial(0); // Index 0 for the first material
+                if (ActorMaterial)
+                {
+                    if (!ActorMaterial->GetName().Contains("MaterialInstanceDynamic"))
+                    {
+                        UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(ActorMaterial, this);
+                        if (DynamicMaterial)
+                        {
+                            ActorMesh->SetMaterial(0, DynamicMaterial);
+                            GlowMaterials.Add(DynamicMaterial);
+                        }
+                    }
+                }
             }
         }
     }
 
-    return false;
+    // Initialize scaling and movement animation parameters
+    if (TargetActors.GlowBlocks.Num() > 2)
+    {
+        InitialScales.Empty();
+        InitialLocations.Empty();
+        FinalLocations.Empty();
+
+        for (AActor* TargetActor : TargetActors.GlowBlocks)
+        {
+            if (TargetActor)
+            {
+                InitialScales.Add(TargetActor->GetActorScale3D());
+                InitialLocations.Add(TargetActor->GetActorLocation());
+                if (TargetActor == TargetActors.GlowBlocks[0])
+                {
+                    FinalLocations.Add(TargetActor->GetActorLocation());
+                }
+                else
+                {
+                    FinalLocations.Add(FMath::VInterpTo(TargetActor->GetActorLocation(), InitialLocations[0], 1.0f, 100.0f));
+                }
+            }
+        }
+    }
+
+    // Start glow and animation timer
+    if (GlowMaterials.Num() > 0)
+    {
+        GlowFactorStart = 0.0f;
+        GlowFactorEnd = 1.0f;
+        GlowPowerStart = 1.0f;
+        GlowPowerEnd = 5.0f;
+        AnimationDuration = 0.25f; // Duration in seconds
+
+        GetWorldTimerManager().SetTimer(GlowTimerHandle, this, &ATetrisGrid::UpdateGlowMaterial, 0.01f, true);
+    }
+}
+
+void ATetrisGrid::GlowSuperDuperBlocks()
+{
+    if (TargetActors.GlowBlocks.Num() < 4) return; // Ensure we have at least 3 actors
+
+    for (AActor* Actor : TargetActors.GlowBlocks)
+    {
+        if (Actor && IsValid(Actor) && !Actor->Tags.Contains(FName("GlowBlock")) && Actor->Tags.Contains(FName("ToGlow")))
+        {
+            Actor->Tags.Add(FName("GlowBlock"));
+            UStaticMeshComponent* ActorMesh = Actor->FindComponentByClass<UStaticMeshComponent>();
+            if (ActorMesh)
+            {
+                // Get the Material from the Static Mesh Component
+                UMaterialInterface* ActorMaterial = ActorMesh->GetMaterial(0); // Index 0 for the first material
+                if (ActorMaterial)
+                {
+                    if (!ActorMaterial->GetName().Contains("MaterialInstanceDynamic"))
+                    {
+                        UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(ActorMaterial, this);
+                        if (DynamicMaterial)
+                        {
+                            ActorMesh->SetMaterial(0, DynamicMaterial);
+                            GlowMaterials.Add(DynamicMaterial);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Initialize scaling and movement animation parameters
+    if (TargetActors.GlowBlocks.Num() > 2)
+    {
+        InitialScales.Empty();
+        InitialLocations.Empty();
+        FinalLocations.Empty();
+
+        for (AActor* TargetActor : TargetActors.GlowBlocks)
+        {
+            if (TargetActor)
+            {
+                InitialScales.Add(TargetActor->GetActorScale3D());
+                InitialLocations.Add(TargetActor->GetActorLocation());
+                if (TargetActor == TargetActors.GlowBlocks[0])
+                {
+                    FinalLocations.Add(TargetActor->GetActorLocation());
+                }
+                else
+                {
+                    FinalLocations.Add(FMath::VInterpTo(TargetActor->GetActorLocation(), InitialLocations[0], 1.0f, 100.0f));
+                }
+            }
+        }
+    }
+
+    // Start glow and animation timer
+    if (GlowMaterials.Num() > 0)
+    {
+        GlowFactorStart = 0.0f;
+        GlowFactorEnd = 1.0f;
+        GlowPowerStart = 1.0f;
+        GlowPowerEnd = 5.0f;
+        AnimationDuration = 0.25f; // Duration in seconds
+
+        GetWorldTimerManager().SetTimer(GlowTimerHandle, this, &ATetrisGrid::UpdateSuperDuperGlowMaterial, 0.01f, true);
+    }
+}
+
+void ATetrisGrid::UpdateGlowMaterial()
+{
+    if (GlowMaterials.Num() > 0 && TargetActors.GlowBlocks.Num() > 2)
+    {
+        // Increment elapsed time
+        TargetActors.ElapsedTime += 0.01f; // Increment matches the timer interval
+
+        // Calculate alpha for Lerp (clamped between 0.0 and 1.0)
+        float Alpha = FMath::Clamp(TargetActors.ElapsedTime / AnimationDuration, 0.0f, 1.0f);
+
+        // Update glow parameters
+        for (UMaterialInstanceDynamic* GlowMaterial : GlowMaterials)
+        {
+            float GlowFactor = FMath::Lerp(GlowFactorStart, GlowFactorEnd, Alpha);
+            float GlowPower = FMath::Lerp(GlowPowerStart, GlowPowerEnd, Alpha);
+            GlowMaterial->SetScalarParameterValue(TEXT("GlowFactor"), GlowFactor);
+            GlowMaterial->SetScalarParameterValue(TEXT("GlowPower"), GlowPower);
+        }
+
+        // Update scales and locations
+        for (int32 i = 0; i < TargetActors.GlowBlocks.Num(); ++i)
+        {
+            if (TargetActors.GlowBlocks[i])
+            {
+                // Scale
+                FVector CurrentScale = FMath::Lerp(InitialScales[i], FinalScale, Alpha);
+                TargetActors.GlowBlocks[i]->SetActorScale3D(CurrentScale);
+
+                // Location (only move Actor2 and Actor3)
+                if (i > 0) // Skip Actor1
+                {
+                    FVector CurrentLocation = FMath::Lerp(InitialLocations[i], FinalLocations[i], Alpha);
+                    TargetActors.GlowBlocks[i]->SetActorLocation(CurrentLocation);
+                }
+            }
+        }
+
+        // Stop the timer when animation completes
+        if (Alpha >= 1.0f)
+        {
+            GlowMaterials.Empty();
+
+            // for (AActor* GlowBlockActor : TargetActors.GlowBlocks)
+            for (int32 g = 0; g < TargetActors.GlowBlocks.Num(); ++g)
+            {
+                DestroyBlockAtLocation(TargetActors.SuperBlockDropSpots[g]);
+                UpdateGridAtLocation(TargetActors.SuperBlockDropSpots[g]);
+            }
+
+            TargetActors.GlowBlocks.Empty();
+            MakeSuperBlock();
+            GetWorldTimerManager().ClearTimer(GlowTimerHandle);
+        }
+    }
+}
+
+void ATetrisGrid::UpdateSuperDuperGlowMaterial()
+{
+    if (GlowMaterials.Num() > 0 && TargetActors.GlowBlocks.Num() > 2)
+    {
+        // Increment elapsed time
+        TargetActors.ElapsedTime += 0.01f; // Increment matches the timer interval
+
+        // Calculate alpha for Lerp (clamped between 0.0 and 1.0)
+        float Alpha = FMath::Clamp(TargetActors.ElapsedTime / AnimationDuration, 0.0f, 1.0f);
+
+        // Update glow parameters
+        for (UMaterialInstanceDynamic* GlowMaterial : GlowMaterials)
+        {
+            float GlowFactor = FMath::Lerp(GlowFactorStart, GlowFactorEnd, Alpha);
+            float GlowPower = FMath::Lerp(GlowPowerStart, GlowPowerEnd, Alpha);
+            GlowMaterial->SetScalarParameterValue(TEXT("GlowFactor"), GlowFactor);
+            GlowMaterial->SetScalarParameterValue(TEXT("GlowPower"), GlowPower);
+        }
+
+        // Update scales and locations
+        for (int32 i = 0; i < TargetActors.GlowBlocks.Num(); ++i)
+        {
+            if (TargetActors.GlowBlocks[i])
+            {
+                // Scale
+                FVector CurrentScale = FMath::Lerp(InitialScales[i], FinalScale, Alpha);
+                TargetActors.GlowBlocks[i]->SetActorScale3D(CurrentScale);
+
+                // Location (only move Actor2 and Actor3)
+                if (i > 0) // Skip Actor1
+                {
+                    FVector CurrentLocation = FMath::Lerp(InitialLocations[i], FinalLocations[i], Alpha);
+                    TargetActors.GlowBlocks[i]->SetActorLocation(CurrentLocation);
+                }
+            }
+        }
+
+        // Stop the timer when animation completes
+        if (Alpha >= 1.0f)
+        {
+            GlowMaterials.Empty();
+
+            // for (AActor* GlowBlockActor : TargetActors.GlowBlocks)
+            for (int32 g = 0; g < TargetActors.GlowBlocks.Num(); ++g)
+            {
+                DestroyBlockAtLocation(TargetActors.SuperBlockDropSpots[g]);
+                UpdateGridAtLocation(TargetActors.SuperBlockDropSpots[g]);
+            }
+
+            TargetActors.GlowBlocks.Empty();
+            MakeSuperDuperBlock();
+            GetWorldTimerManager().ClearTimer(GlowTimerHandle);
+        }
+    }
+}
+
+void ATetrisGrid::ScaleAndMoveActors(AActor* Actor1, AActor* Actor2, AActor* Actor3)
+{
+    if (Actor1 && Actor2 && Actor3)
+    {
+        // Scale all three actors down by 50%
+        const FVector ScaleFactor = FVector(0.5f, 0.5f, 0.5f); // 50% reduction in scale
+        Actor1->SetActorScale3D(Actor1->GetActorScale3D() * ScaleFactor);
+        Actor2->SetActorScale3D(Actor2->GetActorScale3D() * ScaleFactor);
+        Actor3->SetActorScale3D(Actor3->GetActorScale3D() * ScaleFactor);
+
+        // Get the position of the first actor
+        FVector Actor1Location = Actor1->GetActorLocation();
+
+        // Move Actor2 100 units closer to Actor1
+        FVector Actor2Location = Actor2->GetActorLocation();
+        FVector Direction2 = (Actor1Location - Actor2Location).GetSafeNormal(); // Direction vector
+        Actor2Location += Direction2 * 100.0f; // Move 100 units closer
+        Actor2->SetActorLocation(Actor2Location);
+
+        // Move Actor3 100 units closer to Actor1
+        FVector Actor3Location = Actor3->GetActorLocation();
+        FVector Direction3 = (Actor1Location - Actor3Location).GetSafeNormal(); // Direction vector
+        Actor3Location += Direction3 * 100.0f; // Move 100 units closer
+        Actor3->SetActorLocation(Actor3Location);
+    }
 }
 
 void ATetrisGrid::SpawnNiagaraSystem(FString Source, FVector SpawnLoc, FLinearColor ExplosionColor1, FLinearColor ExplosionColor2)
@@ -1481,6 +2171,7 @@ void ATetrisGrid::SpawnNiagaraSystem(FString Source, FVector SpawnLoc, FLinearCo
 
 void ATetrisGrid::ClearThreeRows(int32 RowIndex)
 {
+    PrintScreen("running clear three rows");
     if (LaserBurstCue)
     {
         UGameplayStatics::PlaySoundAtLocation(this, LaserBurstCue, GetActorLocation());
@@ -1526,8 +2217,6 @@ void ATetrisGrid::ClearThreeRows(int32 RowIndex)
             }
         }
     }
-
-    MoveBlocksDown();
 }
 
 void ATetrisGrid::FreezeTimeForHackerMode()
@@ -1557,42 +2246,45 @@ void ATetrisGrid::SpawnDeadlySecRow()
 
 void ATetrisGrid::SpawnOfficerTetromino()
 {
-    if (UWorld* World = GetWorld())
+    if (!bIsClearing)
     {
-        if (SecClass)
+        if (UWorld* World = GetWorld())
         {
-            for (int32 i = 0; i < NextTetrominoShape.BlockOffsets.Num(); ++i)
+            if (SecClass)
             {
-                FVector2D Offset = NextTetrominoShape.BlockOffsets[i];
-                TSubclassOf<AActor> TetrominoBlueprint = SecClass;
-
-                FVector BlockLocation = SpawnLocation + FVector(Offset.X * 100.0f, 0.0f, Offset.Y * 100.0f);
-                AActor* Block = World->SpawnActor<AActor>(TetrominoBlueprint, BlockLocation, FRotator::ZeroRotator);
-
-                if (Block)
+                for (int32 i = 0; i < NextTetrominoShape.BlockOffsets.Num(); ++i)
                 {
-                    Block->Tags.Add(FName("OfficerBlock"));
-                    CurrentTetrominoBlocks.Add(Block);
-                }
-            }
+                    FVector2D Offset = NextTetrominoShape.BlockOffsets[i];
+                    TSubclassOf<AActor> TetrominoBlueprint = SecClass;
 
-            if (RoundsLeftBeforeSecSpawn != 1)
-            {
-                for (AActor* NextBlock : NextTetrominoBlocks)
-                {
-                    NextBlock->Destroy();
+                    FVector BlockLocation = SpawnLocation + FVector(Offset.X * 100.0f, 0.0f, Offset.Y * 100.0f);
+                    AActor* Block = World->SpawnActor<AActor>(TetrominoBlueprint, BlockLocation, FRotator::ZeroRotator);
+
+                    if (Block)
+                    {
+                        Block->Tags.Add(FName("OfficerBlock"));
+                        CurrentTetrominoBlocks.Add(Block);
+                    }
                 }
-                NextTetrominoBlocks.Empty();
-                PrepareNextTetromino();
-            }
-            else
-            {
-                for (AActor* NextBlock : NextTetrominoBlocks)
+
+                if (RoundsLeftBeforeSecSpawn != 1)
                 {
-                    NextBlock->Destroy();
+                    for (AActor* NextBlock : NextTetrominoBlocks)
+                    {
+                        NextBlock->Destroy();
+                    }
+                    NextTetrominoBlocks.Empty();
+                    PrepareNextTetromino();
                 }
-                NextTetrominoBlocks.Empty();
-                PrepareOfficerTetromino();
+                else
+                {
+                    for (AActor* NextBlock : NextTetrominoBlocks)
+                    {
+                        NextBlock->Destroy();
+                    }
+                    NextTetrominoBlocks.Empty();
+                    PrepareOfficerTetromino();
+                }
             }
         }
     }
@@ -1619,7 +2311,7 @@ void ATetrisGrid::ClearOfficerBlocks()
     }
 
     UE_LOG(LogTemp, Warning, TEXT("Cleared out %d officer blocks"), OfficerBlockCount);
-    MoveBlocksDown();
+    CheckForBlocksToDrop();
     Combos = 0;
 }
 
@@ -1703,5 +2395,219 @@ void ATetrisGrid::UpdateNiagaraLocation()
     if (NewLocationLeft == EndLocationLeft && NewLocationRight == EndLocationRight)
     {
         GetWorldTimerManager().ClearTimer(LerpTimerHandle);
+    }
+}
+
+void ATetrisGrid::PrintScreen(FString message, float showDuration)
+{
+    if (GEngine)
+    {
+        GEngine->AddOnScreenDebugMessage(-1, showDuration, FColor::Green, message);
+    }
+}
+
+void ATetrisGrid::IncrementScore(int32 NewScore)
+{
+    int maxInt32 = std::numeric_limits<int>::max();
+
+    Score = FMath::Clamp(NewScore, 0, maxInt32 - 1);
+
+    if (Score >= CurrentLevel.TargetScore)
+    {
+        SetBoardMaterial(VictoryMaterialForBoard, 0.0f, CurrentLevel.BackgroundColor);
+
+        GetWorld()->GetTimerManager().SetTimer(VictoryTimerHandle, this, &ATetrisGrid::BlinkBoardColors, 0.2f, true, 2.0f);
+
+        ClearBoard();
+    }
+
+    OnUpdateScore.Broadcast();
+}
+
+void ATetrisGrid::BlinkBoardColors()
+{
+    GetWorld()->GetTimerManager().ClearTimer(VictoryTimerHandle);
+    GetWorld()->GetTimerManager().SetTimer(BlinkBoardTimerHandle, this, &ATetrisGrid::Blink, 0.2f, true, 0.0f);
+}
+
+void ATetrisGrid::Blink()
+{
+    ElapsedBlinking += 0.2f;
+
+    // Get all components (TSet<UActorComponent*>)
+    const TSet<UActorComponent*>& Components = TetrisBoardInstance->GetComponents();
+    const TArray<FString> TargetComponents = { "LeftBound", "RightBound", "Floor", "Ceiling" };
+
+    if (CurrentColorPickerValue == 1.0f)
+    {
+        CurrentColorPickerValue = 0.0f;
+    }
+    else
+    {
+        CurrentColorPickerValue = 1.0f;
+    }
+
+    SetBoardMaterial(VictoryMaterialForBoard, CurrentColorPickerValue, CurrentLevel.BackgroundColor);
+
+    if (ElapsedBlinking >= BlinkDuration)
+    {
+        GetWorld()->GetTimerManager().ClearTimer(BlinkBoardTimerHandle);
+        ElapsedBlinking = 0.0f;
+
+        NextLevel();
+    }
+}
+
+void ATetrisGrid::SetBoardMaterial(UMaterialInterface* BoardMaterial, float ColorPickerValue, FVector BackgroundColor)
+{
+    UWorld* World = GetWorld();
+    if (World && TetrisBoard)
+    {
+        if (!TetrisBoardInstance)
+        {
+            FActorSpawnParameters SpawnParams;
+            TetrisBoardInstance = World->SpawnActor<AActor>(TetrisBoard, FVector(-500.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParams);
+        }
+
+        if (TetrisBoardInstance)
+        {
+            const TSet<UActorComponent*>& Components = TetrisBoardInstance->GetComponents();
+            const TArray<FString> TargetComponents = { "LeftBound", "RightBound", "Floor", "Ceiling" };
+
+            for (UActorComponent* Component : Components)
+            {
+                if (Component && TargetComponents.Contains(Component->GetName()))
+                {
+                    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Component);
+                    if (MeshComponent)
+                    {
+                        if (BoardMaterial == GlowMaterialForBoard)
+                        {
+                            MeshComponent->SetMaterial(0, BoardMaterial);
+                        }
+                        else
+                        {
+                            UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(BoardMaterial, this);
+                            if (DynamicMaterial)
+                            {
+                                DynamicMaterial->SetScalarParameterValue(TEXT("ColorPicker"), ColorPickerValue);
+                                MeshComponent->SetMaterial(0, DynamicMaterial);
+                            }
+                        }
+                    }
+                }
+                else if (Component && Component->GetName() == "Background")
+                {
+                    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Component);
+                    if (MeshComponent)
+                    {
+                        UMaterialInstanceDynamic* DynamicMaterial = Cast<UMaterialInstanceDynamic>(MeshComponent->GetMaterial(0));
+                        if (!DynamicMaterial)
+                        {
+                            DynamicMaterial = UMaterialInstanceDynamic::Create(MeshComponent->GetMaterial(0), this);
+                        }
+                        if (DynamicMaterial)
+                        {
+                            PrintScreen(DynamicMaterial->GetName());
+                            DynamicMaterial->SetVectorParameterValue(TEXT("Color"), BackgroundColor);
+                            MeshComponent->SetMaterial(0, DynamicMaterial);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void ATetrisGrid::ClearBoard()
+{
+    for (int32 x = 0; x < GridWidth; ++x)
+    {
+        for (int32 y = 0; y < GridHeight; ++y)
+        {
+            if (Grid[x][y] != nullptr)
+            {
+                Grid[x][y]->Destroy();
+                Grid[x][y] = nullptr;
+            }
+        }
+    }
+
+    for (AActor* Block : CurrentTetrominoBlocks)
+    {
+        Block->Destroy();
+    }
+    CurrentTetrominoBlocks.Empty();
+
+    for (AActor* NextBlock : NextTetrominoBlocks)
+    {
+        NextBlock->Destroy();
+    }
+    NextTetrominoBlocks.Empty();
+
+    bIsClearing = true;
+}
+
+void ATetrisGrid::NextLevel()
+{
+    CurrentLevelIndex = FMath::Clamp(CurrentLevelIndex + 1, 0, LevelsDataTable.Num() - 1);
+    CurrentLevel = LevelsDataTable[CurrentLevelIndex];
+    DefaultFallInterval = CurrentLevel.FallingSpeed;
+    bIsClearing = false;
+    Score = 0;
+    OnUpdateScore.Broadcast();
+
+    RoundsLeftBeforeSecSpawn = RoundsBeforeSecSpawn;
+    SetBoardMaterial(GlowMaterialForBoard, 0.0f, CurrentLevel.BackgroundColor);
+    CurrentColorPickerValue = 0.0f;
+    PrepareNextTetromino();
+    SpawnTetromino();
+}
+
+void ATetrisGrid::SpawnBombExplosion(AActor* Actor)
+{
+    TArray<FVector> ExplosionOffsets = {
+        FVector(100.0f, 0.0f, 0.0f),   // Right
+        FVector(-100.0f, 0.0f, 0.0f),  // Left
+        FVector(0.0f, 0.0f, 100.0f),   // Up
+        FVector(0.0f, 0.0f, -100.0f),  // Down
+        FVector(100.0f, 0.0f, 100.0f),   // Top Right
+        FVector(-100.0f, 0.0f, 100.0f),  // Top Left
+        FVector(100.0f, 0.0f, -100.0f),  // Bottom Right
+        FVector(-100.0f, 0.0f, -100.0f)  // Bottom Left
+    };
+
+    FVector Token1Location = Actor->GetActorLocation();
+
+    // Destroy high-value tokens and update grid
+    DestroyBlockAtLocation(Token1Location);
+
+    // Trigger explosion effects at adjacent blocks
+    for (const FVector& Offset : ExplosionOffsets)
+    {
+        FVector ExplosionLocation1 = Token1Location + Offset;
+
+        FVector2D GridLocation = FVector2D((ExplosionLocation1.X + 1000.0f) / 100.0f, ExplosionLocation1.Z / 100.0f);
+        if (GridLocation.X >= 0 && GridLocation.X < GridWidth && GridLocation.Y >= 0 && GridLocation.Y < GridHeight)
+        {
+            if (Grid[GridLocation.X][GridLocation.Y] != nullptr)
+            {
+                if (!Grid[GridLocation.X][GridLocation.Y]->Tags.Contains(FName("BombBlock")))
+                {
+                    // Directly update the grid at the expected explosion locations
+                    UpdateGridAtLocation(ExplosionLocation1);
+                }
+            }
+        }
+
+        APlayerController* PlayerController = GetWorld()->GetFirstPlayerController();
+        if (PlayerController && CameraShakeClass.IsValid())
+        {
+            UClass* LoadedCameraShakeClass = CameraShakeClass.Get();
+            PlayerController->ClientStartCameraShake(LoadedCameraShakeClass);
+        }
+        PrintScreen("SPLODE!");
+
+        // SpawnNiagaraSystem(TEXT("/Game/VFX/NS_Explosion"), (Token1Location + Token2Location) / 2.0f, ExplosionColor1, ExplosionColor2);
     }
 }

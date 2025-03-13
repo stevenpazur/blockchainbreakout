@@ -21,6 +21,13 @@
 		{
 			"Name": "DatasmithFBXImporter",
 			"Enabled": true
+		},
+		{
+			"Name": "HDRIBackdrop",
+			"Enabled": true
 		}
+	],
+	"TargetPlatforms": [
+		"Windows"
 	]
 }

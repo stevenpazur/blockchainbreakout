@@ -15,6 +15,9 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraComponent.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "DropState.h"
+#include "GlowBlockAnimationData.h"
+#include "LevelData.h"
 
 #include "TetrisGrid.generated.h"
 
@@ -41,9 +44,17 @@ public:
     // delegate binding
 
     DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUpdateUI);
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUpdateScore);
+    DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnUpdateNotches);
 
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnUpdateUI OnUpdateUI;
+
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnUpdateScore OnUpdateScore;
+
+    UPROPERTY(BlueprintAssignable, Category = "Events")
+    FOnUpdateNotches OnUpdateNotches;
 
     // end delegate binding
 
@@ -128,6 +139,14 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Audio")
     USoundBase* StoneCue2;
 
+    UPROPERTY(BlueprintReadOnly, Category = "Gameplay")
+    FLevelData CurrentLevel;
+
+    int32 CurrentLevelIndex;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gameplay")
+    TArray<FLevelData> LevelsDataTable;
+
     void GameOver();
 
     UUserWidget* ScoreWidget;
@@ -151,10 +170,11 @@ public:
     // handle powerups and chain reactions
     void TriggerExplosion(AActor* HighValueToken1, AActor* HighValueToken2, FLinearColor ExplosionColor1, FLinearColor ExplosionColor2);
     void DestroyBlockAtLocation(FVector Location);
-    void CheckForHorizontalExplosions(AActor* Actor);
-    void CheckForVerticalExplosions(AActor* Actor);
-    void CheckForExplosions(AActor* Actor, FVector Direction);
+    bool CheckForHorizontalExplosions(AActor* Actor);
+    bool CheckForVerticalExplosions(AActor* Actor);
+    bool CheckForExplosions(AActor* Actor, FVector Direction);
     bool CheckForSuperBlockFormation(AActor* Actor);
+    bool CheckForSuperDuperBlockFormation(AActor* Actor);
     void CheckForCombos();
 
     TArray<TSubclassOf<AActor>> SuperBlocks;
@@ -170,9 +190,10 @@ public:
     void SpawnOfficerTetromino();
     bool ShouldSpawnOfficerTetromino;
     bool InOfficerBlocksRound;
-    int32 RoundsBeforeSecSpawn = 5;
+    int32 RoundsBeforeSecSpawn = 10;
     int32 RoundsLeftBeforeSecSpawn;
 
+    void PrepareFirstTetromino();
     void PrepareNextTetromino();
     void PrepareOfficerTetromino();
 
@@ -201,6 +222,7 @@ private:
     float BlockFallSpeed;
     bool bIsBlockFalling;
     bool bIsAnimating;
+    bool bIsCheckingForCombos;
     void OnAnimationComplete();
 
     TArray<TArray<AActor*>> Grid; // 2D array to represent the grid
@@ -255,4 +277,71 @@ private:
     TMap<AActor*, int32> BlocksToDrop;
     FTimerHandle MoveBlocksTimerHandle;
     float BlockMoveInterval = 0.2f;
+
+    void MoveBlocksDownIncrementally();
+    TArray<AActor*> BlocksToMove;
+    TArray<int32> RowsToMove;
+    bool CanMoveDown(int32 x, int32 y);
+
+    int32 DropX;               // Stores the x-coordinate of the block
+    int32 DropY1;              // Tracks the current y-coordinate of the block
+    int32 DropLoopIndex;       // Tracks the loop iteration
+    int32 DropDistance;        // Stores how far the block should drop
+    FTimerHandle DropTimerHandle; // Timer handle for the drop operation
+    void HandleDrop();         // Function to handle the drop logic
+    void HandleMultipleDrops();
+    TArray<FDropState> DropsArray; // Tracks all active drops
+    bool bAnyDropInProgress;
+    FTimerHandle CheckIfReadyToSpawnTetromino;
+    void CheckIfReadyForNewTetromino();
+    void CheckForBlocksToDrop();
+
+    // glow super blocks
+    void GlowBlocks();
+    void GlowSuperDuperBlocks();
+    void UpdateGlowMaterial();
+    void UpdateSuperDuperGlowMaterial();
+    void MakeSuperBlock();
+    void MakeSuperDuperBlock();
+    FTimerHandle GlowTimerHandle;
+    TArray<UMaterialInstanceDynamic*> GlowMaterials;
+    float GlowFactorStart = 0.0;
+    float GlowFactorEnd = 1.0f;
+    float GlowPowerStart = 1.0f;
+    float GlowPowerEnd = 5.0f;
+    float AnimationDuration = 2.0f; // Duration in seconds
+    FGlowBlockAnimationData TargetActors;
+    TArray<FVector> InitialScales;
+    TArray<FVector> InitialLocations;
+    FVector FinalScale;
+    TArray<FVector> FinalLocations;
+
+    // scale and move actors for super block formation
+    void ScaleAndMoveActors(AActor* Actor1, AActor* Actor2, AActor* Actor3);
+
+    // debugging
+    void PrintScreen(FString message, float showDuration = 5.f);
+
+    void IncrementScore(int32 TargetScore);
+
+    UMaterialInterface* GlowMaterialForBoard;
+    UMaterialInterface* VictoryMaterialForBoard;
+    UMaterialInstanceDynamic* WinMaterial;
+    UClass* TetrisBoard;
+    AActor* TetrisBoardInstance;
+    void SetBoardMaterial(UMaterialInterface* BoardMaterial, float ColorPickerValue, FVector BackgroundColor);
+    FTimerHandle VictoryTimerHandle;
+    FTimerHandle BlinkBoardTimerHandle;
+    void BlinkBoardColors();
+    void Blink();
+    float BlinkDuration = 3.0f;
+    float ElapsedBlinking = 0.0f;
+    float CurrentColorPickerValue = 0.0f;
+
+    void ClearBoard();
+    bool bIsClearing = false;
+    void NextLevel();
+
+    UClass* BombBlockClass;
+    void SpawnBombExplosion(AActor* Actor);
 };

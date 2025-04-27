@@ -324,12 +324,12 @@ private:
 
     void IncrementScore(int32 TargetScore);
 
-    UMaterialInterface* GlowMaterialForBoard;
-    UMaterialInterface* VictoryMaterialForBoard;
+    UMaterialInstanceDynamic* GlowMaterialForBoard;
+    UMaterialInstanceDynamic* BackgroundMaterialForBoard;
     UMaterialInstanceDynamic* WinMaterial;
     UClass* TetrisBoard;
     AActor* TetrisBoardInstance;
-    void SetBoardMaterial(UMaterialInterface* BoardMaterial, float ColorPickerValue, FVector BackgroundColor);
+    void SetVictoryBoardMaterial(float ColorPickerValue, FVector BackgroundColor, float VictorySwitch);
     FTimerHandle VictoryTimerHandle;
     FTimerHandle BlinkBoardTimerHandle;
     void BlinkBoardColors();

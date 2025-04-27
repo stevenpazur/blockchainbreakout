@@ -227,12 +227,20 @@ void ATetrisGrid::BeginPlay()
         {
             SuperBlocks.Add(SuperBitcoinClass);
         }
+        else
+        {
+			PrintScreen("Failed to load super bitcoin class");
+        }
 
         FString superEthereumPath = TEXT("/Game/Blueprints/BP_superethereum.BP_superethereum_C");
         UClass* SuperEthereumClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *superEthereumPath));
         if (SuperEthereumClass)
         {
             SuperBlocks.Add(SuperEthereumClass);
+        }
+        else
+        {
+			PrintScreen("Failed to load super ethereum class");
         }
 
         FString superXrpPath = TEXT("/Game/Blueprints/BP_superxrp.BP_superxrp_C");
@@ -241,12 +249,20 @@ void ATetrisGrid::BeginPlay()
         {
             SuperBlocks.Add(SuperXrpClass);
         }
+        else
+        {
+			PrintScreen("Failed to load super xrp class");
+        }
 
         FString superPolkadotPath = TEXT("/Game/Blueprints/BP_superpolkadot.BP_superpolkadot_C");
         UClass* SuperPolkadotClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *superPolkadotPath));
         if (SuperPolkadotClass)
         {
             SuperBlocks.Add(SuperPolkadotClass);
+        }
+        else
+        {
+			PrintScreen("Failed to load super polkadot class");
         }
 
         FString superSolanaPath = TEXT("/Game/Blueprints/BP_supersolana.BP_supersolana_C");
@@ -255,6 +271,10 @@ void ATetrisGrid::BeginPlay()
         {
             SuperBlocks.Add(SuperSolanaClass);
         }
+        else
+        {
+			PrintScreen("Failed to load super solana class");
+        }
 
         FString superTetherPath = TEXT("/Game/Blueprints/BP_supertether.BP_supertether_C");
         UClass* SuperTetherClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *superTetherPath));
@@ -262,12 +282,20 @@ void ATetrisGrid::BeginPlay()
         {
             SuperBlocks.Add(SuperTetherClass);
         }
+        else
+        {
+			PrintScreen("Failed to load super tether class");
+        }
 
         FString superUsdcPath = TEXT("/Game/Blueprints/BP_superusdc.BP_superusdc_C");
         UClass* SuperUsdcClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *superUsdcPath));
         if (SuperUsdcClass)
         {
             SuperBlocks.Add(SuperUsdcClass);
+        }
+        else
+        {
+			PrintScreen("Failed to load super usdc class");
         }
 
         FString bombBlockPath = TEXT("/Game/Blueprints/BP_bomb.BP_bomb_C");
@@ -284,11 +312,44 @@ void ATetrisGrid::BeginPlay()
 
         TetrisBoard = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, TEXT("/Game/Blueprints/BP_TetrisGrid.BP_TetrisGrid_C")));
 
-        GlowMaterialForBoard = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, TEXT("/Game/Materials/M_glow_inst.M_glow_inst")));
+        UMaterialInterface* GlowBoardInst = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, TEXT("/Game/Materials/M_glow_inst.M_glow_inst")));
+		GlowMaterialForBoard = UMaterialInstanceDynamic::Create(GlowBoardInst, this);
 
-        VictoryMaterialForBoard = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, TEXT("/Game/Materials/M_hologram_inst.M_hologram_inst")));
+		UMaterialInterface* BackgroundBoardInst = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, TEXT("/Game/Materials/M_hologram_board.M_hologram_board")));
+		BackgroundMaterialForBoard = UMaterialInstanceDynamic::Create(BackgroundBoardInst, this);
 
-        SetBoardMaterial(GlowMaterialForBoard, 0.0f, CurrentLevel.BackgroundColor);
+        FActorSpawnParameters SpawnParams;
+        TetrisBoardInstance = GetWorld()->SpawnActor<AActor>(TetrisBoard, FVector(-500.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParams);
+
+        if (TetrisBoardInstance)
+        {
+            const TSet<UActorComponent*>& Components = TetrisBoardInstance->GetComponents();
+            const TArray<FString> TargetComponents = { "LeftBound", "RightBound", "Floor", "Ceiling" };
+
+            for (UActorComponent* Component : Components)
+            {
+                if (Component && TargetComponents.Contains(Component->GetName()))
+                {
+                    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Component);
+                    if (MeshComponent)
+                    {
+                        MeshComponent->SetMaterial(0, GlowMaterialForBoard);
+                    }
+                }
+                else if (Component && Component->GetName() == "Background")
+                {
+                    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Component);
+                    if (MeshComponent)
+                    {
+                        if (BackgroundMaterialForBoard)
+                        {
+                            BackgroundMaterialForBoard->SetVectorParameterValue(TEXT("Color"), CurrentLevel.BackgroundColor);
+                            MeshComponent->SetMaterial(0, BackgroundMaterialForBoard);
+                        }
+                    }
+                }
+            }
+        }
 
         GetWorldTimerManager().SetTimer(TetrominoFallTimerHandle, this, &ATetrisGrid::MoveTetrominoDown, CurrentFallInterval, true);
 
@@ -1789,27 +1850,42 @@ void ATetrisGrid::MakeSuperBlock()
     if (!bIsClearing)
     {
         int32 SuperBlockIndex = FindPointValueIndexByName(*TargetActors.BlockName);
-        if (SuperBlockIndex != INDEX_NONE)
+        if (SuperBlockIndex != INDEX_NONE && SuperBlockIndex > -1 && SuperBlockIndex < SuperBlocks.Num())
         {
             TSubclassOf<AActor> BlockClass = SuperBlocks[SuperBlockIndex];
 
-            FActorSpawnParameters SpawnParams;
-            SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-
-            FVector WorldLocation = TargetActors.SuperBlockDropSpots[0];
-            AActor* SuperBlock = GetWorld()->SpawnActor<AActor>(BlockClass, WorldLocation, FRotator::ZeroRotator, SpawnParams);
-            if (SuperBlock)
+            if (BlockClass)
             {
-                SuperBlock->Tags.Add(FName("TetrisBlock"));
-                SuperBlock->Tags.Add(FName("SuperBlock"));
-                SuperBlock->Tags.Add(FName("CannotBlowUpYet"));
+                FActorSpawnParameters SpawnParams;
+                SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 
-                int32 GridX = FMath::RoundToInt((WorldLocation.X + 1000.0f) / 100.0f);
-                int32 GridY = FMath::RoundToInt(WorldLocation.Z / 100.0f);
+                FVector WorldLocation = TargetActors.SuperBlockDropSpots[0];
+                AActor* SuperBlock = GetWorld()->SpawnActor<AActor>(BlockClass, WorldLocation, FRotator::ZeroRotator, SpawnParams);
+                if (SuperBlock)
+                {
+                    SuperBlock->Tags.Add(FName("TetrisBlock"));
+                    SuperBlock->Tags.Add(FName("SuperBlock"));
+                    SuperBlock->Tags.Add(FName("CannotBlowUpYet"));
 
-                SetGrid(GridX, GridY, SuperBlock);
-                SuperBlock->Tags.Add(FName("CanClearThreeRows"));
+                    int32 GridX = FMath::RoundToInt((WorldLocation.X + 1000.0f) / 100.0f);
+                    int32 GridY = FMath::RoundToInt(WorldLocation.Z / 100.0f);
+
+                    SetGrid(GridX, GridY, SuperBlock);
+                    SuperBlock->Tags.Add(FName("CanClearThreeRows"));
+                }
+                else
+                {
+                    PrintScreen(FString::Printf(TEXT("Failed to spawn Super Block!  Block class: %s"), *BlockClass->GetName()));
+                }
             }
+            else
+            {
+				PrintScreen("Failed to get Super Block class!");
+            }
+        }
+        else
+        {
+			PrintScreen(FString::Printf(TEXT("Failed to find Super Block index!  Block name: %s"), *TargetActors.BlockName));
         }
 
         CheckForBlocksToDrop();
@@ -2188,7 +2264,7 @@ void ATetrisGrid::ClearThreeRows(int32 RowIndex)
             {
                 if (y >= 0 && y < GridHeight)
                 {
-                    if (Grid[x][y] != nullptr)
+                    if (Grid[x][y] != nullptr && IsValid(Grid[x][y]))
                     {
                         AActor* GridBlock = Grid[x][y];
                         GridBlock->Tags.Add(FName("Destroy"));
@@ -2414,7 +2490,7 @@ void ATetrisGrid::IncrementScore(int32 NewScore)
 
     if (Score >= CurrentLevel.TargetScore)
     {
-        SetBoardMaterial(VictoryMaterialForBoard, 0.0f, CurrentLevel.BackgroundColor);
+		SetVictoryBoardMaterial(0.0f, CurrentLevel.BackgroundColor, 1.0f);
 
         GetWorld()->GetTimerManager().SetTimer(VictoryTimerHandle, this, &ATetrisGrid::BlinkBoardColors, 0.2f, true, 2.0f);
 
@@ -2447,7 +2523,7 @@ void ATetrisGrid::Blink()
         CurrentColorPickerValue = 1.0f;
     }
 
-    SetBoardMaterial(VictoryMaterialForBoard, CurrentColorPickerValue, CurrentLevel.BackgroundColor);
+    SetVictoryBoardMaterial(CurrentColorPickerValue, CurrentLevel.BackgroundColor, 1.0f);
 
     if (ElapsedBlinking >= BlinkDuration)
     {
@@ -2458,65 +2534,37 @@ void ATetrisGrid::Blink()
     }
 }
 
-void ATetrisGrid::SetBoardMaterial(UMaterialInterface* BoardMaterial, float ColorPickerValue, FVector BackgroundColor)
+void ATetrisGrid::SetVictoryBoardMaterial(float ColorPickerValue, FVector BackgroundColor, float VictorySwitch)
 {
-    UWorld* World = GetWorld();
-    if (World && TetrisBoard)
-    {
-        if (!TetrisBoardInstance)
+    try {
+        if (GlowMaterialForBoard != nullptr && IsValid(GlowMaterialForBoard))
         {
-            FActorSpawnParameters SpawnParams;
-            TetrisBoardInstance = World->SpawnActor<AActor>(TetrisBoard, FVector(-500.0f, 0.0f, 0.0f), FRotator::ZeroRotator, SpawnParams);
+            GlowMaterialForBoard->SetScalarParameterValue(TEXT("ColorPicker"), ColorPickerValue);
+            GlowMaterialForBoard->SetVectorParameterValue(TEXT("Color"), BackgroundColor);
+            GlowMaterialForBoard->SetScalarParameterValue(TEXT("VictorySwitch"), VictorySwitch);
+        }
+        else
+        {
+            PrintScreen("Victory material is null!");
         }
 
-        if (TetrisBoardInstance)
+        UMaterialInstanceDynamic* BackgroundMaterial = BackgroundMaterialForBoard;
+        if (BackgroundMaterial != nullptr && IsValid(BackgroundMaterial))
         {
-            const TSet<UActorComponent*>& Components = TetrisBoardInstance->GetComponents();
-            const TArray<FString> TargetComponents = { "LeftBound", "RightBound", "Floor", "Ceiling" };
-
-            for (UActorComponent* Component : Components)
-            {
-                if (Component && TargetComponents.Contains(Component->GetName()))
-                {
-                    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Component);
-                    if (MeshComponent)
-                    {
-                        if (BoardMaterial == GlowMaterialForBoard)
-                        {
-                            MeshComponent->SetMaterial(0, BoardMaterial);
-                        }
-                        else
-                        {
-                            UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(BoardMaterial, this);
-                            if (DynamicMaterial)
-                            {
-                                DynamicMaterial->SetScalarParameterValue(TEXT("ColorPicker"), ColorPickerValue);
-                                MeshComponent->SetMaterial(0, DynamicMaterial);
-                            }
-                        }
-                    }
-                }
-                else if (Component && Component->GetName() == "Background")
-                {
-                    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Component);
-                    if (MeshComponent)
-                    {
-                        UMaterialInstanceDynamic* DynamicMaterial = Cast<UMaterialInstanceDynamic>(MeshComponent->GetMaterial(0));
-                        if (!DynamicMaterial)
-                        {
-                            DynamicMaterial = UMaterialInstanceDynamic::Create(MeshComponent->GetMaterial(0), this);
-                        }
-                        if (DynamicMaterial)
-                        {
-                            PrintScreen(DynamicMaterial->GetName());
-                            DynamicMaterial->SetVectorParameterValue(TEXT("Color"), BackgroundColor);
-                            MeshComponent->SetMaterial(0, DynamicMaterial);
-                        }
-                    }
-                }
-            }
+            BackgroundMaterial->SetVectorParameterValue(TEXT("Color"), BackgroundColor);
+        } // crashes here
+        else
+        {
+            PrintScreen("Background material is null!");
         }
     }
+	catch (const std::exception& e) {
+		PrintScreen(FString::Printf(TEXT("Exception: %s"), *FString(e.what())));
+	}
+	catch (...)
+	{
+		PrintScreen("Unknown exception occurred!");
+	}
 }
 
 void ATetrisGrid::ClearBoard()
@@ -2558,7 +2606,7 @@ void ATetrisGrid::NextLevel()
     OnUpdateScore.Broadcast();
 
     RoundsLeftBeforeSecSpawn = RoundsBeforeSecSpawn;
-    SetBoardMaterial(GlowMaterialForBoard, 0.0f, CurrentLevel.BackgroundColor);
+	SetVictoryBoardMaterial(0.0f, CurrentLevel.BackgroundColor, 0.0f);
     CurrentColorPickerValue = 0.0f;
     PrepareNextTetromino();
     SpawnTetromino();
